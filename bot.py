@@ -19,17 +19,17 @@ dp = Dispatcher()
 
 ROUTER_PROMPT = """
 Ти розумний асистент. Визнач намір користувача.
-Поверни ТІЛЬКИ валідний JSON у форматі: {"intent": "НАМІР", "response": "текст"}
+Поверни ТІЛЬКИ валідний JSON у форматі: {"intent": "НАМІР", "folder": "Назва_папки", "filename": "Коротка_назва", "response": "текст"}
 
 Доступні наміри (НАМІР):
 1. "SYSTEM": Загальний стан сервера. response: "".
 2. "DOCKER": Статус Docker. response: "".
 3. "TODO": Завдання. response: "коротке формулювання завдання (1 рядок)".
-4. "NOTE": Збереження довгої ідеї, конспекту. response: "чистий Markdown-код нотатки з YAML-frontmatter (title, date, tags). Теги АНГЛІЙСЬКОЮ. Дата: {CURRENT_DATE}".
+4. "NOTE": Збереження нотатки. folder: "Category in English". filename: "english_name_no_spaces". response: "Markdown-код. УСІ ДАНІ (title, текст, теги, назва файлу) ГЕНЕРУЙ ВИКЛЮЧНО АНГЛІЙСЬКОЮ МОВОЮ. ОБОВ'ЯЗКОВО починай з блоку YAML. Формат СУВОРО такий:\n---\ntitle: English Title\ndate: {CURRENT_DATE}\ntags:\n  - arch-linux\n  - rx-9070-xt\n  - hyprland\n---\nВідступ: 2 пробіли, дефіс, пробіл. АБСОЛЮТНО ЖОДНИХ ПРОБІЛІВ У САМИХ ТЕГАХ! Якщо тег складається з кількох слів, ОБОВ'ЯЗКОВО з'єднуй їх дефісами (наприклад: 'Arch-Linux', 'RTX-4050', 'RX-9070-XT'). Далі текст нотатки англійською, ключові терміни в [[ ]]."
 5. "DAILY": Короткі думки, події для щоденника. response: "текст для щоденника".
 6. "LINK": Збереження посилання, якщо повідомлення містить URL. response: "сама URL-адреса".
-7. "SEARCH": Користувач шукає інформацію у своїх нотатках (питає "який", "де", "нагадай", "що"). response: "2-3 ключових слова для пошуку (тільки іменники/терміни, наприклад: планшет область)".
-8. "CHAT": Звичайна розмова, якщо жоден інший намір не підходить. response: "твоя розгорнута відповідь".
+7. "SEARCH": Користувач шукає інформацію у своїх нотатках. response: "2-3 ключових слова для пошуку (тільки іменники)".
+8. "CHAT": Звичайна розмова. response: "твоя розгорнута відповідь".
 """
 
 def sync_git():
@@ -101,12 +101,27 @@ async def process_intent(message: types.Message, raw_text: str):
             await msg.edit_text(f"✅ Додано до справ:\n`{response_text}`")
 
         elif intent == "NOTE":
-            filename = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_Note.md")
-            filepath = os.path.join(NOTES_DIR, filename)
+            folder_name = data.get("folder", "Uncategorized").replace(" ", "_")
+            file_name = data.get("filename", "Note").replace(" ", "_")
+            
+            safe_filename = "".join(c for c in file_name if c.isalnum() or c in ('_', '-'))
+            if not safe_filename: 
+                safe_filename = "Note"
+            
+            target_dir = os.path.join(NOTES_DIR, folder_name)
+            os.makedirs(target_dir, exist_ok=True)
+            
+            filepath = os.path.join(target_dir, f"{safe_filename}.md")
+            
+            if os.path.exists(filepath):
+                filepath = os.path.join(target_dir, f"{safe_filename}_{datetime.now().strftime('%H%M%S')}.md")
+            
             with open(filepath, "w", encoding="utf-8") as f:
                 f.write(response_text)
+            
             sync_git()
-            await msg.edit_text(f"✅ Нотатку збережено як `{filename}`")
+            rel_path = os.path.relpath(filepath, NOTES_DIR)
+            await msg.edit_text(f"✅ Нотатку збережено: `{rel_path}`")
 
         elif intent == "DAILY":
             filename = f"{datetime.now().strftime('%Y-%m-%d')}_Daily.md"
@@ -138,15 +153,23 @@ async def process_intent(message: types.Message, raw_text: str):
             keywords = response_text.split()
             context_text = ""
             
-            # Скануємо всі .md файли
             for root, _, files in os.walk(NOTES_DIR):
                 for file in files:
                     if file.endswith(".md"):
                         try:
                             with open(os.path.join(root, file), "r", encoding="utf-8") as f:
-                                text = f.read()
-                                if any(kw.lower() in text.lower() for kw in keywords):
-                                    context_text += f"\n--- Файл: {file} ---\n{text}\n"
+                                lines = f.readlines()
+                                file_matches = []
+                                for i, line in enumerate(lines):
+                                    if any(kw.lower() in line.lower() for kw in keywords):
+                                        start = max(0, i - 2)
+                                        end = min(len(lines), i + 3)
+                                        snippet = "".join(lines[start:end]).strip()
+                                        if snippet not in file_matches:
+                                            file_matches.append(snippet)
+                                
+                                if file_matches:
+                                    context_text += f"\n[Файл: {file}]:\n" + "\n...\n".join(file_matches) + "\n"
                         except:
                             pass
 
@@ -154,8 +177,7 @@ async def process_intent(message: types.Message, raw_text: str):
                 await msg.edit_text("❌ В базі знань не знайдено інформації за цим запитом.")
                 return
 
-            # Формуємо відповідь на основі знайденого
-            qa_prompt = f"Відповідай коротко. Спирайся ТІЛЬКИ на цей контекст з моїх нотаток:\n{context_text[:15000]}"
+            qa_prompt = f"Відповідай коротко. Спирайся ТІЛЬКИ на цей контекст з моїх нотаток:\n{context_text[:6000]}"
             qa_response = await asyncio.to_thread(
                 client.chat.completions.create,
                 messages=[
@@ -167,7 +189,7 @@ async def process_intent(message: types.Message, raw_text: str):
             )
             await msg.edit_text(f"🧠 **Знайдено в нотатках:**\n\n{qa_response.choices[0].message.content}")
 
-        else: # CHAT
+        else:
             await msg.edit_text(response_text)
 
     except Exception as e:
