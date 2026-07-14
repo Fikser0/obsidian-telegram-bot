@@ -15,5 +15,5 @@ Telegram-бот на базі Python (aiogram 3) та Groq API (LLaMA 3) для 
 
 1. Клонуйте репозиторій:
    ```bash
-   git clone [https://github.com/ВАШ_НІК/ВАШ_РЕПОЗИТОРІЙ.git](https://github.com/ВАШ_НІК/ВАШ_РЕПОЗИТОРІЙ.git)
+   git clone https://Fikser0/obsidian-telegram-bot.git
    cd server-assistant
